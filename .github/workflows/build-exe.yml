@@ -28,6 +28,18 @@ jobs:
             nuget restore $csproj.FullName
           }
 
+      - name: Remove Missing Source File Entries
+        shell: pwsh
+        run: |
+          $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
+          $missing = @('ElectronFuseWire.cs', 'EnhancerConfig.cs', 'DiskFusePatch.cs')
+          $lines = Get-Content -Path $csproj.FullName
+          $filtered = $lines | Where-Object {
+            $line = $_
+            -not ($missing | Where-Object { $line -match [regex]::Escape($_) })
+          }
+          Set-Content -Path $csproj.FullName -Value $filtered
+
       - name: Build EXE with MSBuild
         shell: pwsh
         run: |
