@@ -11,20 +11,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v2
 
-      - name: Restore and Publish EXE
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore NuGet Packages
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem -Path . -Filter *.sln -Recurse | Select-Object -First 1
+          if ($sln) {
+            nuget restore $sln.FullName
+          } else {
+            $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
+            nuget restore $csproj.FullName
+          }
+
+      - name: Build EXE with MSBuild
         shell: pwsh
         run: |
           $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
-          dotnet restore $csproj.FullName
-          dotnet publish $csproj.FullName -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\publish-out
+          msbuild $csproj.FullName /p:Configuration=Release /p:Platform=AnyCPU /t:Build /m
+
+      - name: Collect EXE Files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .\publish-out | Out-Null
+          Get-ChildItem -Path .\WandEnhancer -Include *.exe -Recurse |
+            Where-Object { $_.FullName -notmatch '\\obj\\' } |
+            Copy-Item -Destination .\publish-out -Force
+          Get-ChildItem .\publish-out
 
       - name: Upload EXE Artifact
         uses: actions/upload-artifact@v4
         with:
           name: WandEnhancer-win-x64
-          path: .\publish-out\*.exe
+          path: .\publish-out\*
