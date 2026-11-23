@@ -28,7 +28,7 @@ jobs:
             nuget restore $csproj.FullName
           }
 
-      - name: Remove Missing Source File Entries
+      - name: Patch Missing Files for Build
         shell: pwsh
         run: |
           $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
@@ -39,6 +39,24 @@ jobs:
             -not ($missing | Where-Object { $line -match [regex]::Escape($_) })
           }
           Set-Content -Path $csproj.FullName -Value $filtered
+
+          $stubPath = Join-Path (Split-Path $csproj.FullName) 'Core\EnhancerConfigStub.cs'
+          New-Item -ItemType Directory -Force -Path (Split-Path $stubPath) | Out-Null
+          @'
+namespace WandEnhancer.Core
+{
+    public class EnhancerConfig
+    {
+        public bool EnableDevTools { get; set; }
+        public bool DisableAds { get; set; }
+        public bool EnableCustomCss { get; set; }
+        public string CustomCss { get; set; } = string.Empty;
+        public string CustomJs { get; set; } = string.Empty;
+        public static EnhancerConfig Load() => new EnhancerConfig();
+        public void Save() { }
+    }
+}
+'@ | Set-Content -Path $stubPath
 
       - name: Build EXE with MSBuild
         shell: pwsh
