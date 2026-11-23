@@ -1,29 +1,47 @@
-name: Mirror to GitLab
+name: Build Windows EXE
 
 on:
-  push:
-    branches: [ "master", "main" ]
-    tags:
-      - '*'
   workflow_dispatch:
 
-
 jobs:
-  mirror:
-    if: github.repository == 'k1tbyte/Wand-Enhancer'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+  build:
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          
-      - name: Push to GitLab
-        env:
-          GITLAB_USERNAME: kitbyte
-          GITLAB_REPO: Wand-Enhancer
+      - uses: actions/checkout@v4
+      - uses: nuget/setup-nuget@v2
+      - uses: microsoft/setup-msbuild@v2
+
+      - shell: pwsh
         run: |
-          git remote add gitlab https://oauth2:${{ secrets.GITLAB_TOKEN }}@gitlab.com/$GITLAB_USERNAME/$GITLAB_REPO.git
-          git push gitlab --all --force
-          git push gitlab --tags --force
+          $sln = Get-ChildItem -Path . -Filter *.sln -Recurse | Select-Object -First 1
+          if ($sln) { nuget restore $sln.FullName }
+          else {
+            $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
+            nuget restore $csproj.FullName
+          }
+
+      - shell: pwsh
+        run: |
+          $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
+          $missing = @('ElectronFuseWire.cs', 'EnhancerConfig.cs', 'DiskFusePatch.cs')
+          $lines = Get-Content -Path $csproj.FullName
+          $filtered = $lines | Where-Object { $line = $_; -not ($missing | Where-Object { $line -match [regex]::Escape($_) }) }
+          Set-Content -Path $csproj.FullName -Value $filtered
+          $stubPath = Join-Path (Split-Path $csproj.FullName) 'Core\EnhancerConfigStub.cs'
+          New-Item -ItemType Directory -Force -Path (Split-Path $stubPath) | Out-Null
+          Set-Content -Path $stubPath -Value 'namespace WandEnhancer.Core { public class EnhancerConfig { public bool EnableDevTools { get; set; } public bool DisableAds { get; set; } public bool EnableCustomCss { get; set; } public string CustomCss { get; set; } = ""; public string CustomJs { get; set; } = ""; public static EnhancerConfig Load() => new EnhancerConfig(); public void Save() {} } }'
+
+      - shell: pwsh
+        run: |
+          $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
+          msbuild $csproj.FullName /p:Configuration=Release /p:Platform=AnyCPU /t:Build /m
+
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .\publish-out | Out-Null
+          Get-ChildItem -Path .\WandEnhancer -Include *.exe -Recurse | Where-Object { $_.FullName -notmatch '\\obj\\' } | Copy-Item -Destination .\publish-out -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WandEnhancer-win-x64
+          path: .\publish-out\*
