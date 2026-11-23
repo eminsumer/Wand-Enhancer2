@@ -6,75 +6,42 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: nuget/setup-nuget@v2
+      - uses: microsoft/setup-msbuild@v2
 
-      - name: Setup NuGet
-        uses: nuget/setup-nuget@v2
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Restore NuGet Packages
-        shell: pwsh
+      - shell: pwsh
         run: |
           $sln = Get-ChildItem -Path . -Filter *.sln -Recurse | Select-Object -First 1
-          if ($sln) {
-            nuget restore $sln.FullName
-          } else {
+          if ($sln) { nuget restore $sln.FullName }
+          else {
             $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
             nuget restore $csproj.FullName
           }
 
-      - name: Patch Missing Files for Build
-        shell: pwsh
+      - shell: pwsh
         run: |
           $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
           $missing = @('ElectronFuseWire.cs', 'EnhancerConfig.cs', 'DiskFusePatch.cs')
           $lines = Get-Content -Path $csproj.FullName
-          $filtered = $lines | Where-Object {
-            $line = $_
-            -not ($missing | Where-Object { $line -match [regex]::Escape($_) })
-          }
+          $filtered = $lines | Where-Object { $line = $_; -not ($missing | Where-Object { $line -match [regex]::Escape($_) }) }
           Set-Content -Path $csproj.FullName -Value $filtered
-
           $stubPath = Join-Path (Split-Path $csproj.FullName) 'Core\EnhancerConfigStub.cs'
           New-Item -ItemType Directory -Force -Path (Split-Path $stubPath) | Out-Null
-          @'
-namespace WandEnhancer.Core
-{
-    public class EnhancerConfig
-    {
-        public bool EnableDevTools { get; set; }
-        public bool DisableAds { get; set; }
-        public bool EnableCustomCss { get; set; }
-        public string CustomCss { get; set; } = string.Empty;
-        public string CustomJs { get; set; } = string.Empty;
-        public static EnhancerConfig Load() => new EnhancerConfig();
-        public void Save() { }
-    }
-}
-'@ | Set-Content -Path $stubPath
+          Set-Content -Path $stubPath -Value 'namespace WandEnhancer.Core { public class EnhancerConfig { public bool EnableDevTools { get; set; } public bool DisableAds { get; set; } public bool EnableCustomCss { get; set; } public string CustomCss { get; set; } = ""; public string CustomJs { get; set; } = ""; public static EnhancerConfig Load() => new EnhancerConfig(); public void Save() {} } }'
 
-      - name: Build EXE with MSBuild
-        shell: pwsh
+      - shell: pwsh
         run: |
           $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
           msbuild $csproj.FullName /p:Configuration=Release /p:Platform=AnyCPU /t:Build /m
 
-      - name: Collect EXE Files
-        shell: pwsh
+      - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .\publish-out | Out-Null
-          Get-ChildItem -Path .\WandEnhancer -Include *.exe -Recurse |
-            Where-Object { $_.FullName -notmatch '\\obj\\' } |
-            Copy-Item -Destination .\publish-out -Force
-          Get-ChildItem .\publish-out
+          Get-ChildItem -Path .\WandEnhancer -Include *.exe -Recurse | Where-Object { $_.FullName -notmatch '\\obj\\' } | Copy-Item -Destination .\publish-out -Force
 
-      - name: Upload EXE Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: WandEnhancer-win-x64
           path: .\publish-out\*
