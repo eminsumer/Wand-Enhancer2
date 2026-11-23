@@ -1,47 +1,94 @@
-name: Build Windows EXE
+name: Build
 
 on:
+  push:
+    branches: [ main, master ]
+  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nuget/setup-nuget@v2
-      - uses: microsoft/setup-msbuild@v2
 
-      - shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        shell: pwsh
         run: |
           $sln = Get-ChildItem -Path . -Filter *.sln -Recurse | Select-Object -First 1
-          if ($sln) { nuget restore $sln.FullName }
-          else {
-            $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
-            nuget restore $csproj.FullName
+          if (-not $sln) { throw "Solution file not found" }
+          nuget restore $sln.FullName
+
+      - name: Stub missing sources
+        shell: pwsh
+        run: |
+          $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
+          if (-not $csproj) { throw "csproj not found" }
+          $projDir = Split-Path $csproj.FullName
+
+          [xml]$xml = Get-Content $csproj.FullName -Raw
+          $ns  = $xml.Project.NamespaceURI
+          $nsm = New-Object System.Xml.XmlNamespaceManager $xml.NameTable
+          $nsm.AddNamespace('m', $ns)
+
+          # Repoda olmayan dosyalarin Compile kayitlarini sil
+          foreach ($f in 'ElectronFuseWire.cs','EnhancerConfig.cs','DiskFusePatch.cs') {
+            $xml.SelectNodes("//m:Compile[contains(@Include,'$f')]", $nsm) |
+              ForEach-Object { [void]$_.ParentNode.RemoveChild($_) }
           }
 
-      - shell: pwsh
-        run: |
-          $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
-          $missing = @('ElectronFuseWire.cs', 'EnhancerConfig.cs', 'DiskFusePatch.cs')
-          $lines = Get-Content -Path $csproj.FullName
-          $filtered = $lines | Where-Object { $line = $_; -not ($missing | Where-Object { $line -match [regex]::Escape($_) }) }
-          Set-Content -Path $csproj.FullName -Value $filtered
-          $stubPath = Join-Path (Split-Path $csproj.FullName) 'Core\EnhancerConfigStub.cs'
+          # Stub'i csproj'a ekle (yoksa)
+          if (-not $xml.SelectSingleNode("//m:Compile[@Include='Core\EnhancerConfigStub.cs']", $nsm)) {
+            $anchor = $xml.SelectSingleNode('//m:Compile', $nsm)
+            $item = $xml.CreateElement('Compile', $ns)
+            $item.SetAttribute('Include', 'Core\EnhancerConfigStub.cs')
+            [void]$anchor.ParentNode.AppendChild($item)
+          }
+          $xml.Save($csproj.FullName)
+
+          # Stub dosyasini yaz
+          $stubPath = Join-Path $projDir 'Core\EnhancerConfigStub.cs'
           New-Item -ItemType Directory -Force -Path (Split-Path $stubPath) | Out-Null
-          Set-Content -Path $stubPath -Value 'namespace WandEnhancer.Core { public class EnhancerConfig { public bool EnableDevTools { get; set; } public bool DisableAds { get; set; } public bool EnableCustomCss { get; set; } public string CustomCss { get; set; } = ""; public string CustomJs { get; set; } = ""; public static EnhancerConfig Load() => new EnhancerConfig(); public void Save() {} } }'
+          $stub = @(
+            'namespace WandEnhancer.Core'
+            '{'
+            '    public class EnhancerConfig'
+            '    {'
+            '        public bool EnableDevTools { get; set; }'
+            '        public bool DisableAds { get; set; }'
+            '        public bool EnableCustomCss { get; set; }'
+            '        public string CustomCss { get; set; } = "";'
+            '        public string CustomJs { get; set; } = "";'
+            '        public static EnhancerConfig Load() => new EnhancerConfig();'
+            '        public void Save() { }'
+            '    }'
+            '}'
+          )
+          Set-Content -Path $stubPath -Value $stub -Encoding UTF8
 
-      - shell: pwsh
+          # Kontrol
+          Select-String -Path $csproj.FullName -Pattern 'EnhancerConfigStub'
+
+      - name: Build
+        shell: pwsh
         run: |
           $csproj = Get-ChildItem -Path .\WandEnhancer -Filter *.csproj -Recurse | Select-Object -First 1
-          msbuild $csproj.FullName /p:Configuration=Release /p:Platform=AnyCPU /t:Build /m
+          msbuild $csproj.FullName /t:Build /p:Configuration=Release /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path .\publish-out | Out-Null
-          Get-ChildItem -Path .\WandEnhancer -Include *.exe -Recurse | Where-Object { $_.FullName -notmatch '\\obj\\' } | Copy-Item -Destination .\publish-out -Force
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: WandEnhancer-win-x64
-          path: .\publish-out\*
+          name: WandEnhancer-Release
+          path: WandEnhancer/bin/Release/
+          if-no-files-found: error
